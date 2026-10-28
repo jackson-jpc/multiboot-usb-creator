@@ -489,10 +489,18 @@ EARLYEOF
         --locales="" \
         --fonts="" \
         --themes="" \
-        --modules="part_msdos part_gpt fat iso9660 udf loopback chain normal configfile linux search search_fs_uuid search_fs_file search_label ntfs" \
+        --modules="part_msdos part_gpt fat iso9660 udf loopback chain normal configfile linux linuxefi search search_fs_uuid search_fs_file search_label ntfs test echo all_video halt reboot" \
         "boot/grub/grub.cfg=$early_cfg" >> "$LOG_FILE" 2>&1
 
     rm -f "$early_cfg"
+
+    # Copiar modulos x86_64-efi para o pendrive (necessario para insmod em UEFI)
+    if [ -d "$GRUB_X64_EFI_DIR" ]; then
+        log "INFO" "Copiando modulos x86_64-efi para o pendrive"
+        mkdir -p "$mnt_fat/boot/grub/x86_64-efi"
+        cp "$GRUB_X64_EFI_DIR"/*.mod "$mnt_fat/boot/grub/x86_64-efi/" 2>/dev/null || true
+    fi
+
     touch "$mnt_fat/boot/grub/.multiboot_marker"
     log "INFO" "GRUB2 instalado (BIOS + UEFI)"
 }
@@ -511,13 +519,13 @@ insmod iso9660
 insmod udf
 insmod loopback
 insmod chain
-insmod ntldr
 insmod linux
 insmod normal
 insmod search
 insmod configfile
 insmod all_video
 insmod echo
+insmod test
 
 set timeout=30
 set default=0
@@ -525,10 +533,12 @@ set default=0
 if [ "${grub_platform}" == "efi" ]; then
     insmod efi_gop
     insmod efi_uga
+    insmod linuxefi
     set BOOT_MODE="UEFI"
 else
     insmod vbe
     insmod vga
+    insmod ntldr
     set BOOT_MODE="BIOS Legacy"
 fi
 
