@@ -1867,6 +1867,13 @@ elif [ "$MODO" = "MULTIBOOT" ]; then
         rmdir "$MNT_ISO" 2>/dev/null || true
     fi
 
+    # --- Salvar bootloader EFI do Windows antes do GRUB sobrescrever ---
+    if [ -f "$MNT_FAT/efi/boot/bootx64.efi" ]; then
+        log "INFO" "Salvando bootloader EFI do Windows como bootmgfw.efi"
+        mkdir -p "$MNT_FAT/efi/microsoft/boot"
+        cp "$MNT_FAT/efi/boot/bootx64.efi" "$MNT_FAT/efi/microsoft/boot/bootmgfw.efi"
+    fi
+
     # --- Instalar GRUB2 (DEPOIS do Windows para nao sobrescrever) ---
     log "INFO" "Instalando GRUB2..."
     if usar_whiptail; then
