@@ -1,0 +1,19 @@
+# Reference repos (too large for our repo)
+referencias/
+
+# ISO files
+*.iso
+*.img
+
+# OS generated
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+build/
+dist/
+*.AppImage
+
+# Temp
+*.tmp
+*.log
