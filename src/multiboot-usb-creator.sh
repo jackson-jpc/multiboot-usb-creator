@@ -6,10 +6,22 @@ MNT_SCAN="/tmp/win_scan"
 MNT_ISO="/tmp/win_iso"
 MNT_FAT="/tmp/win_fat"
 MNT_NTFS="/tmp/win_ntfs"
-TITULO="Pendrive Bootavel Windows (BIOS + UEFI)"
+MNT_PROBE="/tmp/win_probe"
+TITULO="Pendrive Bootavel (BIOS + UEFI)"
 LARGURA_BARRA=50
-VERSION="1.0.0"
+VERSION="1.1.0"
 LOG_FILE="/tmp/multiboot-usb-creator.log"
+WIMBOOT_URL="https://github.com/ipxe/wimboot/releases/latest/download/wimboot"
+GRUB_I386_DIR="/usr/lib/grub/i386-pc"
+GRUB_X64_EFI_DIR="/usr/lib/grub/x86_64-efi"
+
+# Arrays para multi-boot
+declare -a MB_ISOS=()
+declare -a MB_ISO_NAMES=()
+declare -a MB_ISO_TYPES=()
+declare -a MB_ISO_SUBTYPES=()
+MB_PRIMARY_WIN=""
+MB_PRIMARY_WIN_NAME=""
 
 # === Cores ===
 VERDE="\e[32m"
@@ -26,7 +38,8 @@ cleanup() {
     umount "$MNT_ISO" 2>/dev/null || true
     umount "$MNT_FAT" 2>/dev/null || true
     umount "$MNT_NTFS" 2>/dev/null || true
-    rmdir "$MNT_SCAN" "$MNT_ISO" "$MNT_FAT" "$MNT_NTFS" 2>/dev/null || true
+    umount "$MNT_PROBE" 2>/dev/null || true
+    rmdir "$MNT_SCAN" "$MNT_ISO" "$MNT_FAT" "$MNT_NTFS" "$MNT_PROBE" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -144,6 +157,582 @@ copiar_com_progresso() {
         done
         echo ""
     fi
+}
+
+# ============================================================
+# FUNCOES MULTI-BOOT
+# ============================================================
+
+verificar_deps_multiboot() {
+    local faltando=()
+
+    if [ ! -d "$GRUB_I386_DIR" ] || [ ! -f "$GRUB_I386_DIR/ntldr.mod" ]; then
+        faltando+=("grub-pc-bin")
+    fi
+
+    if [ ! -d "$GRUB_X64_EFI_DIR" ] || [ ! -f "$GRUB_X64_EFI_DIR/normal.mod" ]; then
+        faltando+=("grub-efi-amd64-bin")
+    fi
+
+    for cmd in grub-mkstandalone grub-install; do
+        command -v "$cmd" &>/dev/null || faltando+=("grub-common")
+    done
+
+    if [ ${#faltando[@]} -gt 0 ]; then
+        local msg="Dependencias faltando para modo MULTIBOOT:\n\n"
+        for dep in "${faltando[@]}"; do
+            msg+="  - $dep\n"
+        done
+        msg+="\nInstale com:\n  sudo apt install grub-pc-bin grub-efi-amd64-bin grub-common"
+        erro "$msg"
+    fi
+    log "INFO" "Dependencias multiboot verificadas OK"
+}
+
+classificar_iso() {
+    local iso="$1"
+    local nome=$(basename "$iso")
+    local tipo=""
+    local subtipo=""
+
+    mkdir -p "$MNT_PROBE"
+    if ! mount -o loop,ro "$iso" "$MNT_PROBE" 2>/dev/null; then
+        rmdir "$MNT_PROBE" 2>/dev/null || true
+        echo "desconhecido|desconhecido"
+        return
+    fi
+
+    if [ -f "$MNT_PROBE/sources/boot.wim" ] || [ -f "$MNT_PROBE/sources/install.wim" ] || \
+       [ -f "$MNT_PROBE/sources/install.esd" ]; then
+        tipo="windows"
+        local ver=$(detectar_versao_windows "$MNT_PROBE")
+        case "$ver" in
+            *"Windows 7"*)  subtipo="win7" ;;
+            *"Windows 10"*) subtipo="win10" ;;
+            *"Windows 11"*) subtipo="win11" ;;
+            *"Windows 8"*|*"8.1"*) subtipo="win8" ;;
+            *) subtipo="windows" ;;
+        esac
+    elif [ -d "$MNT_PROBE/casper" ]; then
+        tipo="linux"
+        local info=""
+        [ -f "$MNT_PROBE/.disk/info" ] && info=$(cat "$MNT_PROBE/.disk/info" 2>/dev/null)
+        if echo "$info" | grep -qi "ubuntu.*server"; then
+            subtipo="ubuntu-server"
+        elif echo "$info" | grep -qi "ubuntu"; then
+            subtipo="ubuntu-desktop"
+        elif echo "$nome" | grep -qi "linux.lite\|linuxlite"; then
+            subtipo="linuxlite"
+        else
+            subtipo="ubuntu-like"
+        fi
+    elif [ -d "$MNT_PROBE/install.amd" ] || [ -d "$MNT_PROBE/install" ]; then
+        tipo="linux"
+        subtipo="debian"
+    elif [ -d "$MNT_PROBE/isolinux" ] || [ -d "$MNT_PROBE/boot/grub" ]; then
+        tipo="linux"
+        subtipo="generic-linux"
+    else
+        tipo="desconhecido"
+        subtipo="desconhecido"
+    fi
+
+    umount "$MNT_PROBE" 2>/dev/null || true
+    rmdir "$MNT_PROBE" 2>/dev/null || true
+    echo "${tipo}|${subtipo}"
+}
+
+probar_linux_iso() {
+    local iso="$1"
+    local subtipo="$2"
+    local kernel="" initrd="" boot_opts="" has_loopback="no"
+
+    mkdir -p "$MNT_PROBE"
+    mount -o loop,ro "$iso" "$MNT_PROBE" 2>/dev/null || { echo "ERRO"; return; }
+
+    case "$subtipo" in
+        ubuntu-server|ubuntu-desktop|ubuntu-like)
+            [ -f "$MNT_PROBE/casper/vmlinuz" ] && kernel="/casper/vmlinuz"
+            [ -f "$MNT_PROBE/casper/vmlinuz.efi" ] && kernel="/casper/vmlinuz.efi"
+            for f in initrd initrd.gz initrd.lz; do
+                [ -f "$MNT_PROBE/casper/$f" ] && initrd="/casper/$f" && break
+            done
+            boot_opts="boot=casper quiet splash ---"
+            ;;
+        linuxlite)
+            [ -f "$MNT_PROBE/casper/vmlinuz" ] && kernel="/casper/vmlinuz"
+            for f in initrd.lz initrd.gz initrd; do
+                [ -f "$MNT_PROBE/casper/$f" ] && initrd="/casper/$f" && break
+            done
+            boot_opts="boot=casper quiet splash ---"
+            ;;
+        debian)
+            if [ -f "$MNT_PROBE/install.amd/vmlinuz" ]; then
+                kernel="/install.amd/vmlinuz"
+                initrd="/install.amd/initrd.gz"
+            elif [ -f "$MNT_PROBE/install/vmlinuz" ]; then
+                kernel="/install/vmlinuz"
+                initrd="/install/initrd.gz"
+            fi
+            boot_opts="vga=788 quiet ---"
+            ;;
+        generic-linux)
+            for kpath in /casper/vmlinuz /live/vmlinuz /boot/vmlinuz /isolinux/vmlinuz; do
+                [ -f "$MNT_PROBE$kpath" ] && kernel="$kpath" && break
+            done
+            for ipath in /casper/initrd /casper/initrd.gz /live/initrd.img /boot/initrd.gz; do
+                [ -f "$MNT_PROBE$ipath" ] && initrd="$ipath" && break
+            done
+            boot_opts="quiet ---"
+            ;;
+    esac
+
+    [ -f "$MNT_PROBE/boot/grub/loopback.cfg" ] && has_loopback="yes"
+
+    umount "$MNT_PROBE" 2>/dev/null || true
+    rmdir "$MNT_PROBE" 2>/dev/null || true
+    echo "${kernel}|${initrd}|${boot_opts}|${has_loopback}"
+}
+
+selecionar_isos_multiboot() {
+    local search_dirs=("$SCRIPT_DIR")
+    local parent_dir="$(dirname "$SCRIPT_DIR")"
+    [ "$parent_dir" != "$SCRIPT_DIR" ] && search_dirs+=("$parent_dir")
+
+    local -a iso_paths=()
+    local -a iso_list=()
+
+    for dir in "${search_dirs[@]}"; do
+        while IFS= read -r arquivo; do
+            [ -z "$arquivo" ] && continue
+            local dup=false
+            for existing in "${iso_paths[@]}"; do
+                [ "$existing" = "$arquivo" ] && { dup=true; break; }
+            done
+            $dup && continue
+            local nome=$(basename "$arquivo")
+            local tamanho=$(du -h "$arquivo" 2>/dev/null | cut -f1)
+            iso_paths+=("$arquivo")
+            iso_list+=("$arquivo" "${nome} (${tamanho})" "OFF")
+        done < <(find "$dir" -maxdepth 1 -iname "*.iso" -type f 2>/dev/null | sort)
+    done
+
+    [ ${#iso_list[@]} -eq 0 ] && erro "Nenhuma ISO encontrada."
+
+    if usar_whiptail; then
+        local selecionadas
+        selecionadas=$(whiptail --title "$TITULO - Multi-Boot" \
+            --checklist "Selecione as ISOs para o pendrive multi-boot:\n(Use ESPACO para selecionar, ENTER para confirmar)" \
+            22 85 10 \
+            "${iso_list[@]}" \
+            3>&1 1>&2 2>&3) || exit 1
+        eval "MB_ISOS=($selecionadas)"
+    else
+        echo ""
+        echo -e "${NEGRITO}ISOs disponiveis:${RESET}"
+        echo ""
+        for ((i=0; i<${#iso_paths[@]}; i++)); do
+            local nome=$(basename "${iso_paths[$i]}")
+            local tamanho=$(du -h "${iso_paths[$i]}" 2>/dev/null | cut -f1)
+            echo -e "  ${VERDE}[$((i+1))]${RESET} $nome (${tamanho})"
+        done
+        echo ""
+        echo -e "Digite os numeros separados por espaco (ex: 1 3 5):"
+        read -p "> " escolhas
+        for num in $escolhas; do
+            local idx=$((num - 1))
+            if [ $idx -ge 0 ] && [ $idx -lt ${#iso_paths[@]} ]; then
+                MB_ISOS+=("${iso_paths[$idx]}")
+            fi
+        done
+    fi
+
+    [ ${#MB_ISOS[@]} -eq 0 ] && erro "Nenhuma ISO selecionada."
+
+    # Classificar cada ISO
+    log "INFO" "Classificando ${#MB_ISOS[@]} ISOs..."
+    for iso in "${MB_ISOS[@]}"; do
+        if usar_whiptail; then
+            whiptail --title "$TITULO" --infobox "Analisando: $(basename "$iso")..." 5 60
+        else
+            echo -e "  Analisando: $(basename "$iso")..."
+        fi
+        local result=$(classificar_iso "$iso")
+        local tipo="${result%%|*}"
+        local subtipo="${result##*|}"
+        MB_ISO_NAMES+=("$(basename "$iso")")
+        MB_ISO_TYPES+=("$tipo")
+        MB_ISO_SUBTYPES+=("$subtipo")
+        log "INFO" "  $(basename "$iso"): tipo=$tipo subtipo=$subtipo"
+    done
+}
+
+selecionar_windows_primario() {
+    local -a win_indices=()
+
+    for ((i=0; i<${#MB_ISO_TYPES[@]}; i++)); do
+        [ "${MB_ISO_TYPES[$i]}" = "windows" ] && win_indices+=("$i")
+    done
+
+    if [ ${#win_indices[@]} -eq 0 ]; then
+        MB_PRIMARY_WIN=""
+        return
+    fi
+
+    if [ ${#win_indices[@]} -eq 1 ]; then
+        local idx=${win_indices[0]}
+        MB_PRIMARY_WIN="${MB_ISOS[$idx]}"
+        MB_PRIMARY_WIN_NAME="${MB_ISO_NAMES[$idx]}"
+        log "INFO" "Windows primario (unico): $MB_PRIMARY_WIN_NAME"
+        return
+    fi
+
+    if usar_whiptail; then
+        local -a menu_items=()
+        for idx in "${win_indices[@]}"; do
+            local nome="${MB_ISO_NAMES[$idx]}"
+            local sub="${MB_ISO_SUBTYPES[$idx]}"
+            local tamanho=$(du -h "${MB_ISOS[$idx]}" 2>/dev/null | cut -f1)
+            menu_items+=("$idx" "${nome} [${sub}] (${tamanho})")
+        done
+
+        local escolha
+        escolha=$(whiptail --title "$TITULO - Windows Primario" \
+            --menu "Qual Windows sera PRIMARIO (extraido)?\n\nO primario tera boot Legacy BIOS + UEFI.\nOs demais serao via wimboot (somente BIOS)." \
+            18 78 6 \
+            "${menu_items[@]}" \
+            3>&1 1>&2 2>&3) || exit 1
+
+        MB_PRIMARY_WIN="${MB_ISOS[$escolha]}"
+        MB_PRIMARY_WIN_NAME="${MB_ISO_NAMES[$escolha]}"
+    else
+        echo ""
+        echo -e "${NEGRITO}Selecione o Windows PRIMARIO (extraido, BIOS+UEFI):${RESET}"
+        echo -e "${AMARELO}Os demais Windows usarao wimboot (somente BIOS).${RESET}"
+        echo ""
+        for idx in "${win_indices[@]}"; do
+            echo -e "  ${VERDE}[$((idx+1))]${RESET} ${MB_ISO_NAMES[$idx]} [${MB_ISO_SUBTYPES[$idx]}]"
+        done
+        echo ""
+        read -p "Numero: " escolha
+        local real_idx=$((escolha - 1))
+        MB_PRIMARY_WIN="${MB_ISOS[$real_idx]}"
+        MB_PRIMARY_WIN_NAME="${MB_ISO_NAMES[$real_idx]}"
+    fi
+    log "INFO" "Windows primario: $MB_PRIMARY_WIN_NAME"
+}
+
+calcular_espaco_multiboot() {
+    local dev="$1"
+    local total_bytes=0
+    local detalhes=""
+
+    for ((i=0; i<${#MB_ISOS[@]}; i++)); do
+        local iso="${MB_ISOS[$i]}"
+        local size=$(stat -c%s "$iso" 2>/dev/null || echo 0)
+        local size_h=$(numfmt --to=iec-i --suffix=B "$size" 2>/dev/null || echo "${size}B")
+
+        if [ "$iso" = "$MB_PRIMARY_WIN" ]; then
+            detalhes+="  [PRIMARIO] ${MB_ISO_NAMES[$i]}: ${size_h}\n"
+            total_bytes=$((total_bytes + size))
+        elif [ "${MB_ISO_TYPES[$i]}" = "windows" ]; then
+            # Wimboot files only (~400MB)
+            detalhes+="  [WIMBOOT]  ${MB_ISO_NAMES[$i]}: ~400MiB (boot files)\n"
+            total_bytes=$((total_bytes + 419430400))
+        else
+            detalhes+="  [ISO]      ${MB_ISO_NAMES[$i]}: ${size_h}\n"
+            total_bytes=$((total_bytes + size))
+        fi
+    done
+
+    total_bytes=$((total_bytes + 52428800))  # +50MB GRUB2/wimboot overhead
+    local total_h=$(numfmt --to=iec-i --suffix=B "$total_bytes" 2>/dev/null || echo "${total_bytes}B")
+    local dev_bytes=$(blockdev --getsize64 "$dev" 2>/dev/null || echo 0)
+    local dev_h=$(numfmt --to=iec-i --suffix=B "$dev_bytes" 2>/dev/null || echo "${dev_bytes}B")
+
+    detalhes+="  GRUB2 + wimboot: ~50MiB\n"
+    detalhes+="\n  Total estimado: ${total_h}\n"
+    detalhes+="  Pendrive:       ${dev_h}\n"
+
+    if [ "$total_bytes" -gt "$dev_bytes" ]; then
+        erro "Espaco insuficiente!\n\n${detalhes}\nAs ISOs selecionadas nao cabem no pendrive."
+    fi
+    echo -e "$detalhes"
+}
+
+instalar_grub2_multiboot() {
+    local dev="$1"
+    local mnt_fat="$2"
+
+    log "INFO" "Instalando GRUB2 Legacy BIOS em $dev"
+    grub-install \
+        --target=i386-pc \
+        --boot-directory="$mnt_fat/boot" \
+        --recheck \
+        --force \
+        "$dev" >> "$LOG_FILE" 2>&1
+
+    log "INFO" "Criando GRUB2 EFI standalone"
+    mkdir -p "$mnt_fat/EFI/BOOT"
+
+    local early_cfg=$(mktemp /tmp/grub_early.XXXXXX)
+    local part_uuid=$(blkid -o value -s UUID "${dev}1")
+    cat > "$early_cfg" << EARLYEOF
+search.fs_uuid ${part_uuid} root
+set prefix=(\$root)/boot/grub
+configfile \$prefix/grub.cfg
+EARLYEOF
+
+    grub-mkstandalone \
+        --format=x86_64-efi \
+        --output="$mnt_fat/EFI/BOOT/bootx64.efi" \
+        --locales="" \
+        --fonts="" \
+        --themes="" \
+        --modules="part_msdos part_gpt fat iso9660 udf loopback chain ntldr normal configfile linux search search_fs_uuid search_fs_file search_label ntfs" \
+        "boot/grub/grub.cfg=$early_cfg" >> "$LOG_FILE" 2>&1
+
+    rm -f "$early_cfg"
+    touch "$mnt_fat/boot/grub/.multiboot_marker"
+    log "INFO" "GRUB2 instalado (BIOS + UEFI)"
+}
+
+gerar_grub_cfg() {
+    local mnt_fat="$1"
+    local cfg_file="$mnt_fat/boot/grub/grub.cfg"
+
+    cat > "$cfg_file" << 'GRUBHEADER'
+# grub.cfg - Gerado por multiboot-usb-creator
+insmod part_msdos
+insmod part_gpt
+insmod fat
+insmod ntfs
+insmod iso9660
+insmod udf
+insmod loopback
+insmod chain
+insmod ntldr
+insmod linux
+insmod normal
+insmod search
+insmod configfile
+insmod all_video
+insmod echo
+
+set timeout=30
+set default=0
+
+if [ "${grub_platform}" == "efi" ]; then
+    insmod efi_gop
+    insmod efi_uga
+    set BOOT_MODE="UEFI"
+else
+    insmod vbe
+    insmod vga
+    set BOOT_MODE="BIOS Legacy"
+fi
+
+set color_normal=white/black
+set color_highlight=black/white
+set menu_color_normal=white/black
+set menu_color_highlight=black/white
+
+probe -u $root --set=rootuuid
+set imgdevpath="/dev/disk/by-uuid/$rootuuid"
+export imgdevpath rootuuid
+
+GRUBHEADER
+
+    # Windows primario
+    if [ -n "$MB_PRIMARY_WIN" ]; then
+        local win_ver=""
+        for ((i=0; i<${#MB_ISOS[@]}; i++)); do
+            [ "${MB_ISOS[$i]}" = "$MB_PRIMARY_WIN" ] && { win_ver="${MB_ISO_SUBTYPES[$i]}"; break; }
+        done
+        local win_label=$(echo "$MB_PRIMARY_WIN_NAME" | sed 's/\.iso$//')
+
+        cat >> "$cfg_file" << WINEOF
+
+# === WINDOWS PRIMARIO: $MB_PRIMARY_WIN_NAME ===
+if [ "\${grub_platform}" == "pc" ]; then
+    menuentry ">>> $win_label [BIOS] - Instalador" {
+        insmod ntldr
+        ntldr /bootmgr
+    }
+fi
+
+if [ "\${grub_platform}" == "efi" ]; then
+    menuentry ">>> $win_label [UEFI] - Instalador" {
+        insmod chain
+        chainloader /efi/microsoft/boot/bootmgfw.efi
+    }
+fi
+WINEOF
+    fi
+
+    # Windows secundarios via wimboot
+    for ((i=0; i<${#MB_ISOS[@]}; i++)); do
+        [ "${MB_ISO_TYPES[$i]}" != "windows" ] && continue
+        [ "${MB_ISOS[$i]}" = "$MB_PRIMARY_WIN" ] && continue
+
+        local iso_name="${MB_ISO_NAMES[$i]}"
+        local win_label=$(echo "$iso_name" | sed 's/\.iso$//')
+        local safe_name=$(echo "$iso_name" | tr ' .' '__' | tr -cd 'a-zA-Z0-9_-')
+
+        cat >> "$cfg_file" << WIMEOF
+
+# Windows secundario: $iso_name (wimboot)
+if [ "\${grub_platform}" == "pc" ]; then
+    menuentry "    $win_label [BIOS - wimboot]" {
+        linux16 /boot/wimboot
+        initrd16 \\
+            newc:bootmgr:/boot/multiboot/${safe_name}/bootmgr \\
+            newc:bcd:/boot/multiboot/${safe_name}/BCD \\
+            newc:boot.sdi:/boot/multiboot/${safe_name}/boot.sdi \\
+            newc:boot.wim:/boot/multiboot/${safe_name}/boot.wim
+    }
+fi
+WIMEOF
+    done
+
+    # Linux ISOs via loopback
+    for ((i=0; i<${#MB_ISOS[@]}; i++)); do
+        [ "${MB_ISO_TYPES[$i]}" != "linux" ] && continue
+
+        local iso_name="${MB_ISO_NAMES[$i]}"
+        local iso_path="/iso/${iso_name}"
+        local subtipo="${MB_ISO_SUBTYPES[$i]}"
+        local linux_label=$(echo "$iso_name" | sed 's/\.iso$//')
+
+        local probe_result=$(probar_linux_iso "${MB_ISOS[$i]}" "$subtipo")
+        local kernel=$(echo "$probe_result" | cut -d'|' -f1)
+        local initrd_val=$(echo "$probe_result" | cut -d'|' -f2)
+        local boot_opts=$(echo "$probe_result" | cut -d'|' -f3)
+        local has_loopback=$(echo "$probe_result" | cut -d'|' -f4)
+
+        if [ "$has_loopback" = "yes" ]; then
+            cat >> "$cfg_file" << LOOPEOF
+
+# Linux: $iso_name (loopback.cfg)
+menuentry "    $linux_label [BIOS+UEFI]" {
+    set iso_path="$iso_path"
+    export iso_path
+    loopback loop \$iso_path
+    set root=(loop)
+    configfile /boot/grub/loopback.cfg
+    loopback --delete loop
+}
+LOOPEOF
+        elif [ -n "$kernel" ] && [ -n "$initrd_val" ]; then
+            cat >> "$cfg_file" << LINEOF
+
+# Linux: $iso_name
+menuentry "    $linux_label [BIOS+UEFI]" {
+    set iso_path="$iso_path"
+    export iso_path
+    loopback loop \$iso_path
+    linux (loop)${kernel} iso-scan/filename=\$iso_path ${boot_opts}
+    initrd (loop)${initrd_val}
+}
+LINEOF
+        else
+            log "WARN" "Kernel/initrd nao detectados para $iso_name"
+            cat >> "$cfg_file" << FALLEOF
+
+# Linux: $iso_name (deteccao automatica falhou)
+menuentry "    $linux_label [PODE PRECISAR AJUSTE]" {
+    set iso_path="$iso_path"
+    export iso_path
+    loopback loop \$iso_path
+    echo "Kernel/initrd nao detectados automaticamente."
+    echo "Edite /boot/grub/grub.cfg no pendrive."
+    echo "Pressione qualquer tecla..."
+    sleep --interruptible 9999
+}
+FALLEOF
+        fi
+    done
+
+    # Boot local + reiniciar + desligar
+    cat >> "$cfg_file" << 'LOCALEOF'
+
+# === UTILIDADES ===
+menuentry "--- Boot do disco local (HD/SSD) ---" {
+    if [ "${grub_platform}" == "pc" ]; then
+        set root=(hd1)
+        chainloader +1
+    else
+        exit
+    fi
+}
+
+menuentry "--- Reiniciar ---" {
+    reboot
+}
+
+menuentry "--- Desligar ---" {
+    halt
+}
+LOCALEOF
+
+    local num_entries=$(grep -c 'menuentry' "$cfg_file")
+    log "INFO" "grub.cfg gerado com $num_entries entradas"
+}
+
+extrair_wimboot_files() {
+    local iso="$1"
+    local safe_name="$2"
+    local mnt_fat="$3"
+    local dest_dir="$mnt_fat/boot/multiboot/${safe_name}"
+
+    mkdir -p "$dest_dir" "$MNT_PROBE"
+    mount -o loop,ro "$iso" "$MNT_PROBE" 2>/dev/null || return 1
+
+    [ -f "$MNT_PROBE/sources/boot.wim" ] && cp "$MNT_PROBE/sources/boot.wim" "$dest_dir/"
+    [ -f "$MNT_PROBE/bootmgr" ] && cp "$MNT_PROBE/bootmgr" "$dest_dir/"
+
+    # BCD (case insensitive paths)
+    for bcd_path in boot/bcd boot/BCD Boot/BCD Boot/bcd; do
+        if [ -f "$MNT_PROBE/$bcd_path" ]; then
+            cp "$MNT_PROBE/$bcd_path" "$dest_dir/BCD"
+            break
+        fi
+    done
+
+    # boot.sdi
+    for sdi_path in boot/boot.sdi Boot/boot.sdi; do
+        if [ -f "$MNT_PROBE/$sdi_path" ]; then
+            cp "$MNT_PROBE/$sdi_path" "$dest_dir/boot.sdi"
+            break
+        fi
+    done
+
+    umount "$MNT_PROBE" 2>/dev/null || true
+    rmdir "$MNT_PROBE" 2>/dev/null || true
+    log "INFO" "Wimboot files extraidos para $dest_dir"
+}
+
+obter_wimboot() {
+    local mnt_fat="$1"
+    local wimboot_dest="$mnt_fat/boot/wimboot"
+
+    local script_wimboot="$SCRIPT_DIR/assets/wimboot"
+    if [ -f "$script_wimboot" ]; then
+        cp "$script_wimboot" "$wimboot_dest"
+        log "INFO" "wimboot copiado de assets/"
+        return 0
+    fi
+
+    if command -v wget &>/dev/null; then
+        log "INFO" "Baixando wimboot..."
+        wget -q -O "$wimboot_dest" "$WIMBOOT_URL" 2>/dev/null && return 0
+    elif command -v curl &>/dev/null; then
+        log "INFO" "Baixando wimboot..."
+        curl -sL -o "$wimboot_dest" "$WIMBOOT_URL" 2>/dev/null && return 0
+    fi
+
+    log "WARN" "Nao foi possivel obter wimboot"
+    return 1
 }
 
 # === Detectar velocidade USB ===
@@ -692,9 +1281,10 @@ while [ $# -gt 0 ]; do
         --mode)
             shift
             case "$1" in
-                compat|COMPAT)   CLI_MODE="COMPAT" ;;
-                moderno|MODERNO) CLI_MODE="MODERNO" ;;
-                *) echo "Modo invalido: $1 (use: compat ou moderno)"; exit 1 ;;
+                compat|COMPAT)       CLI_MODE="COMPAT" ;;
+                moderno|MODERNO)     CLI_MODE="MODERNO" ;;
+                multiboot|MULTIBOOT) CLI_MODE="MULTIBOOT" ;;
+                *) echo "Modo invalido: $1 (use: compat, moderno ou multiboot)"; exit 1 ;;
             esac
             ;;
         --iso)
@@ -843,20 +1433,23 @@ if [ -n "$CLI_MODE" ]; then
 elif usar_whiptail; then
     MODO=$(whiptail --title "$TITULO" \
         --menu "Selecione o modo de criacao:" \
-        16 75 2 \
-        "COMPAT" "Compativel (MBR + FAT32) — Funciona em tudo (Recomendado)" \
-        "MODERNO" "Moderno (GPT + FAT32/NTFS) — Somente PCs UEFI recentes" \
+        18 78 3 \
+        "COMPAT"    "Compativel (MBR + FAT32) — Funciona em tudo (1 OS)" \
+        "MULTIBOOT" "Multi-Boot (MBR + FAT32 + GRUB2) — Varios OS no pendrive" \
+        "MODERNO"   "Moderno (GPT + FAT32/NTFS) — Somente PCs UEFI (1 OS)" \
         3>&1 1>&2 2>&3) || exit 1
 else
     echo ""
     echo -e "${NEGRITO}Modo de criacao:${RESET}"
     echo ""
-    echo -e "  ${VERDE}[1]${RESET} Compativel (MBR + FAT32) — Funciona em tudo ${NEGRITO}(Recomendado)${RESET}"
-    echo -e "  ${VERDE}[2]${RESET} Moderno (GPT + FAT32/NTFS) — Somente PCs UEFI recentes"
+    echo -e "  ${VERDE}[1]${RESET} Compativel (MBR + FAT32) — Funciona em tudo (1 OS)"
+    echo -e "  ${VERDE}[2]${RESET} Multi-Boot (MBR + FAT32 + GRUB2) — Varios OS no pendrive"
+    echo -e "  ${VERDE}[3]${RESET} Moderno (GPT + FAT32/NTFS) — Somente PCs UEFI (1 OS)"
     echo ""
     read -p "Escolha o modo: " modo_escolha
     case "$modo_escolha" in
-        2) MODO="MODERNO" ;;
+        2) MODO="MULTIBOOT" ;;
+        3) MODO="MODERNO" ;;
         *) MODO="COMPAT" ;;
     esac
 fi
@@ -911,114 +1504,165 @@ if echo "$USB_SPEED" | grep -qi "USB 2.0\|USB 1"; then
     fi
 fi
 
-# --- Selecionar ISO ---
-if [ -n "$CLI_ISO" ]; then
-    ISO="$CLI_ISO"
-    log "INFO" "ISO via CLI: $ISO"
-elif usar_whiptail; then
-    WHIP_ISO=()
-    while IFS= read -r arquivo; do
-        nome=$(basename "$arquivo")
-        tamanho=$(du -h "$arquivo" 2>/dev/null | cut -f1)
-        WHIP_ISO+=("$arquivo" "${nome} (${tamanho})")
-    done < <(find "$SCRIPT_DIR" -maxdepth 1 -iname "*.iso" -type f | sort)
-
-    [ ${#WHIP_ISO[@]} -eq 0 ] && erro "Nenhuma ISO encontrada em $SCRIPT_DIR"
-
-    ISO=$(whiptail --title "$TITULO" \
-        --menu "Selecione a ISO do Windows:" \
-        16 78 6 \
-        "${WHIP_ISO[@]}" \
-        3>&1 1>&2 2>&3) || exit 1
+# --- Selecionar ISO(s) ---
+if [ "$MODO" = "MULTIBOOT" ]; then
+    # Multi-boot: selecionar multiplas ISOs + classificar + Windows primario
+    verificar_deps_multiboot
+    selecionar_isos_multiboot
+    selecionar_windows_primario
 else
-    echo ""
-    echo -e "${NEGRITO}ISOs encontradas:${RESET}"
-    echo ""
-    iso_files=()
-    i=1
-    while IFS= read -r arquivo; do
-        nome=$(basename "$arquivo")
-        tamanho=$(du -h "$arquivo" 2>/dev/null | cut -f1)
-        echo -e "  ${VERDE}[$i]${RESET} $nome (${tamanho})"
-        iso_files+=("$arquivo")
-        ((i++))
-    done < <(find "$SCRIPT_DIR" -maxdepth 1 -iname "*.iso" -type f | sort)
+    # Modo simples: selecionar uma ISO
+    if [ -n "$CLI_ISO" ]; then
+        ISO="$CLI_ISO"
+        log "INFO" "ISO via CLI: $ISO"
+    elif usar_whiptail; then
+        WHIP_ISO=()
+        while IFS= read -r arquivo; do
+            nome=$(basename "$arquivo")
+            tamanho=$(du -h "$arquivo" 2>/dev/null | cut -f1)
+            WHIP_ISO+=("$arquivo" "${nome} (${tamanho})")
+        done < <(find "$SCRIPT_DIR" -maxdepth 1 -iname "*.iso" -type f | sort)
 
-    [ ${#iso_files[@]} -eq 0 ] && erro "Nenhuma ISO encontrada em $SCRIPT_DIR"
+        [ ${#WHIP_ISO[@]} -eq 0 ] && erro "Nenhuma ISO encontrada em $SCRIPT_DIR"
 
-    echo ""
-    read -p "Escolha o numero da ISO: " escolha
-    ISO="${iso_files[$((escolha-1))]}"
-    [ -z "$ISO" ] || [ ! -f "$ISO" ] && erro "Opcao invalida."
-fi
-
-# --- Verificar checksum da ISO (se disponivel) ---
-CHECKSUM_RESULT=$(verificar_checksum_iso "$ISO")
-log "INFO" "Checksum ISO: $CHECKSUM_RESULT"
-
-if [ "$CHECKSUM_RESULT" = "OK" ]; then
-    if usar_whiptail; then
-        whiptail --title "Checksum" --msgbox "SHA256 da ISO verificado com sucesso!" 8 50
+        ISO=$(whiptail --title "$TITULO" \
+            --menu "Selecione a ISO:" \
+            16 78 6 \
+            "${WHIP_ISO[@]}" \
+            3>&1 1>&2 2>&3) || exit 1
     else
-        echo -e "  ${VERDE}[OK]${RESET} SHA256 da ISO verificado com sucesso!"
+        echo ""
+        echo -e "${NEGRITO}ISOs encontradas:${RESET}"
+        echo ""
+        iso_files=()
+        i=1
+        while IFS= read -r arquivo; do
+            nome=$(basename "$arquivo")
+            tamanho=$(du -h "$arquivo" 2>/dev/null | cut -f1)
+            echo -e "  ${VERDE}[$i]${RESET} $nome (${tamanho})"
+            iso_files+=("$arquivo")
+            ((i++))
+        done < <(find "$SCRIPT_DIR" -maxdepth 1 -iname "*.iso" -type f | sort)
+
+        [ ${#iso_files[@]} -eq 0 ] && erro "Nenhuma ISO encontrada em $SCRIPT_DIR"
+
+        echo ""
+        read -p "Escolha o numero da ISO: " escolha
+        ISO="${iso_files[$((escolha-1))]}"
+        [ -z "$ISO" ] || [ ! -f "$ISO" ] && erro "Opcao invalida."
     fi
-elif echo "$CHECKSUM_RESULT" | grep -q "FALHOU"; then
-    if usar_whiptail; then
-        whiptail --title "AVISO: Checksum" \
-            --yesno "ATENCAO: O SHA256 da ISO NAO confere!\n\nA ISO pode estar corrompida ou adulterada.\n\nDeseja continuar mesmo assim?" \
-            12 65
-        [ $? -ne 0 ] && exit 1
-    else
-        echo -e "  ${VERMELHO}[FALHA]${RESET} SHA256 da ISO NAO confere!"
-        echo -e "  ${AMARELO}A ISO pode estar corrompida ou adulterada.${RESET}"
-        read -p "Continuar mesmo assim? (s/N): " resp_check
-        [[ "$resp_check" != "s" && "$resp_check" != "S" ]] && exit 1
+
+    # Checksum (modo simples)
+    CHECKSUM_RESULT=$(verificar_checksum_iso "$ISO")
+    log "INFO" "Checksum ISO: $CHECKSUM_RESULT"
+    if [ "$CHECKSUM_RESULT" = "OK" ]; then
+        if usar_whiptail; then
+            whiptail --title "Checksum" --msgbox "SHA256 da ISO verificado com sucesso!" 8 50
+        else
+            echo -e "  ${VERDE}[OK]${RESET} SHA256 da ISO verificado com sucesso!"
+        fi
+    elif echo "$CHECKSUM_RESULT" | grep -q "FALHOU"; then
+        if usar_whiptail; then
+            whiptail --title "AVISO: Checksum" \
+                --yesno "ATENCAO: O SHA256 da ISO NAO confere!\n\nA ISO pode estar corrompida ou adulterada.\n\nDeseja continuar mesmo assim?" \
+                12 65
+            [ $? -ne 0 ] && exit 1
+        else
+            echo -e "  ${VERMELHO}[FALHA]${RESET} SHA256 da ISO NAO confere!"
+            echo -e "  ${AMARELO}A ISO pode estar corrompida ou adulterada.${RESET}"
+            read -p "Continuar mesmo assim? (s/N): " resp_check
+            [[ "$resp_check" != "s" && "$resp_check" != "S" ]] && exit 1
+        fi
     fi
 fi
 
 # --- Confirmacao ---
 DEV_TAMANHO=$(lsblk -dno SIZE "$DEV" | xargs)
 DEV_MODELO=$(lsblk -dno MODEL "$DEV" | xargs)
-ISO_NOME=$(basename "$ISO")
-ISO_TAMANHO=$(du -h "$ISO" 2>/dev/null | cut -f1)
 
-if [ "$MODO" = "COMPAT" ]; then
+if [ "$MODO" = "MULTIBOOT" ]; then
+    MODO_DESC="Multi-Boot (MBR + FAT32 + GRUB2)"
+    ESPACO_INFO=$(calcular_espaco_multiboot "$DEV")
+elif [ "$MODO" = "COMPAT" ]; then
     MODO_DESC="Compativel (MBR + FAT32)"
 else
     MODO_DESC="Moderno (GPT + FAT32/NTFS)"
 fi
 
-if usar_whiptail; then
-    whiptail --title "$TITULO" \
-        --yesno "CONFIRMAR OPERACAO:\n\n\
+if [ "$MODO" = "MULTIBOOT" ]; then
+    # Confirmacao multi-boot
+    local conf_isos=""
+    for ((i=0; i<${#MB_ISOS[@]}; i++)); do
+        local marker=""
+        [ "${MB_ISOS[$i]}" = "$MB_PRIMARY_WIN" ] && marker=" [PRIMARIO]"
+        conf_isos+="  - ${MB_ISO_NAMES[$i]} (${MB_ISO_TYPES[$i]})${marker}\n"
+    done
+    if usar_whiptail; then
+        local conf_limpo=$(echo -e "$ESPACO_INFO" | sed 's/\x1b\[[0-9;]*m//g')
+        whiptail --title "$TITULO" --scrolltext \
+            --yesno "CONFIRMAR OPERACAO MULTI-BOOT:\n\n\
+Modo:     $MODO_DESC\n\
+Pendrive: $DEV ($DEV_TAMANHO - $DEV_MODELO)\n\
+USB:      $USB_SPEED\n\n\
+ISOs selecionadas:\n$(echo -e "$conf_isos")\n\
+$conf_limpo\n\
+TODOS OS DADOS DO PENDRIVE SERAO APAGADOS!\n\n\
+Deseja continuar?" \
+            28 75 || exit 1
+    else
+        echo ""
+        echo -e "${NEGRITO}${AMARELO}==========================================${RESET}"
+        echo -e "${NEGRITO}${AMARELO} CONFIRMACAO MULTI-BOOT${RESET}"
+        echo -e "${NEGRITO}${AMARELO}==========================================${RESET}"
+        echo ""
+        echo -e "  Modo:     ${NEGRITO}$MODO_DESC${RESET}"
+        echo -e "  Pendrive: ${NEGRITO}$DEV${RESET} ($DEV_TAMANHO - $DEV_MODELO)"
+        echo -e "  USB:      ${NEGRITO}$USB_SPEED${RESET}"
+        echo ""
+        echo -e "  ISOs selecionadas:"
+        echo -e "$conf_isos"
+        echo -e "$ESPACO_INFO"
+        echo -e "  ${NEGRITO}${VERMELHO}TODOS OS DADOS DO PENDRIVE SERAO APAGADOS!${RESET}"
+        echo ""
+        read -p "Deseja continuar? (s/N): " resp
+        [[ "$resp" != "s" && "$resp" != "S" ]] && exit 1
+    fi
+else
+    # Confirmacao modo simples
+    ISO_NOME=$(basename "$ISO")
+    ISO_TAMANHO=$(du -h "$ISO" 2>/dev/null | cut -f1)
+    if usar_whiptail; then
+        whiptail --title "$TITULO" \
+            --yesno "CONFIRMAR OPERACAO:\n\n\
 Modo:     $MODO_DESC\n\
 Pendrive: $DEV ($DEV_TAMANHO - $DEV_MODELO)\n\
 USB:      $USB_SPEED\n\
 ISO:      $ISO_NOME ($ISO_TAMANHO)\n\n\
 TODOS OS DADOS DO PENDRIVE SERAO APAGADOS!\n\n\
 Deseja continuar?" \
-        20 70 || exit 1
-else
-    echo ""
-    echo -e "${NEGRITO}${AMARELO}==========================================${RESET}"
-    echo -e "${NEGRITO}${AMARELO} CONFIRMACAO${RESET}"
-    echo -e "${NEGRITO}${AMARELO}==========================================${RESET}"
-    echo ""
-    echo -e "  Modo:     ${NEGRITO}$MODO_DESC${RESET}"
-    echo -e "  Pendrive: ${NEGRITO}$DEV${RESET} ($DEV_TAMANHO - $DEV_MODELO)"
-    echo -e "  USB:      ${NEGRITO}$USB_SPEED${RESET}"
-    echo -e "  ISO:      ${NEGRITO}$ISO_NOME${RESET} ($ISO_TAMANHO)"
-    echo ""
-    echo -e "  ${NEGRITO}${VERMELHO}TODOS OS DADOS DO PENDRIVE SERAO APAGADOS!${RESET}"
-    echo ""
-    read -p "Deseja continuar? (s/N): " resp
-    [[ "$resp" != "s" && "$resp" != "S" ]] && exit 1
+            20 70 || exit 1
+    else
+        echo ""
+        echo -e "${NEGRITO}${AMARELO}==========================================${RESET}"
+        echo -e "${NEGRITO}${AMARELO} CONFIRMACAO${RESET}"
+        echo -e "${NEGRITO}${AMARELO}==========================================${RESET}"
+        echo ""
+        echo -e "  Modo:     ${NEGRITO}$MODO_DESC${RESET}"
+        echo -e "  Pendrive: ${NEGRITO}$DEV${RESET} ($DEV_TAMANHO - $DEV_MODELO)"
+        echo -e "  USB:      ${NEGRITO}$USB_SPEED${RESET}"
+        echo -e "  ISO:      ${NEGRITO}$ISO_NOME${RESET} ($ISO_TAMANHO)"
+        echo ""
+        echo -e "  ${NEGRITO}${VERMELHO}TODOS OS DADOS DO PENDRIVE SERAO APAGADOS!${RESET}"
+        echo ""
+        read -p "Deseja continuar? (s/N): " resp
+        [[ "$resp" != "s" && "$resp" != "S" ]] && exit 1
+    fi
 fi
 
 # ============================================================
 # CRIAR PENDRIVE BOOTAVEL
 # ============================================================
-log "INFO" "Iniciando criacao: modo=$MODO dev=$DEV iso=$ISO"
+log "INFO" "Iniciando criacao: modo=$MODO dev=$DEV"
 log "INFO" "USB Speed: $USB_SPEED"
 
 if [ "$MODO" = "COMPAT" ]; then
@@ -1116,6 +1760,165 @@ if [ "$MODO" = "COMPAT" ]; then
             cp "$WIM_FILE" "$MNT_FAT/sources/"
         fi
     fi
+
+elif [ "$MODO" = "MULTIBOOT" ]; then
+    # ===========================================================
+    # MODO MULTI-BOOT: MBR + FAT32 + GRUB2 (multiplos OS)
+    # ===========================================================
+    TOTAL_ETAPAS=7
+
+    executar_etapas_multiboot_prep() {
+        if usar_whiptail; then
+            echo 5; echo "XXX"; echo "[1/$TOTAL_ETAPAS] Desmontando particoes..."; echo "XXX"
+        else
+            etapa 1 $TOTAL_ETAPAS "Desmontando particoes..."
+        fi
+        umount ${DEV}* 2>/dev/null || true
+        sleep 1
+
+        if usar_whiptail; then
+            echo 12; echo "XXX"; echo "[2/$TOTAL_ETAPAS] Criando tabela MBR..."; echo "XXX"
+        else
+            etapa 2 $TOTAL_ETAPAS "Criando tabela MBR..."
+        fi
+        parted "$DEV" --script mklabel msdos
+
+        if usar_whiptail; then
+            echo 20; echo "XXX"; echo "[3/$TOTAL_ETAPAS] Criando particao FAT32..."; echo "XXX"
+        else
+            etapa 3 $TOTAL_ETAPAS "Criando particao FAT32..."
+        fi
+        parted "$DEV" --script mkpart primary fat32 1MiB 100%
+        parted "$DEV" --script set 1 boot on
+        parted "$DEV" --script set 1 lba on
+        sleep 2
+        partprobe "$DEV"
+        sleep 2
+
+        if usar_whiptail; then
+            echo 30; echo "XXX"; echo "[4/$TOTAL_ETAPAS] Formatando FAT32..."; echo "XXX"
+        else
+            etapa 4 $TOTAL_ETAPAS "Formatando FAT32..."
+        fi
+        mkfs.fat -F 32 -n "MULTIBOOT" ${DEV}1 >/dev/null 2>&1
+
+        if usar_whiptail; then
+            echo 38; echo "XXX"; echo "[5/$TOTAL_ETAPAS] Montando pendrive..."; echo "XXX"
+        else
+            etapa 5 $TOTAL_ETAPAS "Montando pendrive..."
+        fi
+        mkdir -p "$MNT_FAT"
+        mount ${DEV}1 "$MNT_FAT"
+        mkdir -p "$MNT_FAT/iso" "$MNT_FAT/boot/multiboot"
+    }
+
+    if usar_whiptail; then
+        executar_etapas_multiboot_prep | whiptail --title "$TITULO" --gauge \
+            "Preparando pendrive Multi-Boot..." 8 70 0
+    else
+        echo ""
+        echo -e "${NEGRITO}${AZUL}==========================================${RESET}"
+        echo -e "${NEGRITO} Criando pendrive Multi-Boot...${RESET}"
+        echo -e "${NEGRITO}${AZUL}==========================================${RESET}"
+        executar_etapas_multiboot_prep
+    fi
+
+    # --- Copiar Windows primario (extraido) ---
+    if [ -n "$MB_PRIMARY_WIN" ]; then
+        log "INFO" "Copiando Windows primario: $MB_PRIMARY_WIN_NAME"
+        mkdir -p "$MNT_ISO"
+        mount -o loop,ro "$MB_PRIMARY_WIN" "$MNT_ISO"
+
+        if ! usar_whiptail; then
+            etapa 6 $TOTAL_ETAPAS "Copiando $MB_PRIMARY_WIN_NAME..."
+        fi
+        copiar_com_progresso "$MNT_ISO/" "$MNT_FAT/" \
+            "[6/$TOTAL_ETAPAS] Copiando $MB_PRIMARY_WIN_NAME..." \
+            --no-owner --no-group --exclude='sources/install.wim' --exclude='sources/install.esd'
+
+        # Tratar install.wim
+        WIM_FILE=""
+        [ -f "$MNT_ISO/sources/install.wim" ] && WIM_FILE="$MNT_ISO/sources/install.wim"
+        [ -f "$MNT_ISO/sources/install.esd" ] && WIM_FILE="$MNT_ISO/sources/install.esd"
+
+        if [ -n "$WIM_FILE" ]; then
+            WIM_SIZE=$(stat -c%s "$WIM_FILE" 2>/dev/null || echo 0)
+            WIM_NOME=$(basename "$WIM_FILE")
+            if [ "$WIM_SIZE" -gt 4294967296 ]; then
+                log "INFO" "$WIM_NOME > 4GB, iniciando split"
+                split_wim_com_progresso "$WIM_FILE" "$MNT_FAT/sources/install.swm" 7 $TOTAL_ETAPAS
+            else
+                log "INFO" "$WIM_NOME < 4GB, copiando direto"
+                cp "$WIM_FILE" "$MNT_FAT/sources/"
+            fi
+        fi
+
+        umount "$MNT_ISO" 2>/dev/null || true
+        rmdir "$MNT_ISO" 2>/dev/null || true
+    fi
+
+    # --- Instalar GRUB2 (DEPOIS do Windows para nao sobrescrever) ---
+    log "INFO" "Instalando GRUB2..."
+    if usar_whiptail; then
+        (
+            echo 20; echo "XXX"; echo "Instalando GRUB2 Legacy BIOS..."; echo "XXX"
+            instalar_grub2_multiboot "$DEV" "$MNT_FAT"
+            echo 100; echo "XXX"; echo "GRUB2 instalado!"; echo "XXX"
+        ) | whiptail --title "$TITULO" --gauge "Instalando GRUB2..." 8 70 0
+    else
+        echo ""
+        barra_progresso 50 "Instalando GRUB2..."
+        instalar_grub2_multiboot "$DEV" "$MNT_FAT"
+        barra_progresso 100 "GRUB2 instalado!"
+        echo ""
+    fi
+
+    # --- Copiar Windows secundarios (wimboot files) ---
+    local has_extra_win=false
+    for ((i=0; i<${#MB_ISOS[@]}; i++)); do
+        [ "${MB_ISO_TYPES[$i]}" != "windows" ] && continue
+        [ "${MB_ISOS[$i]}" = "$MB_PRIMARY_WIN" ] && continue
+
+        has_extra_win=true
+        local iso_name="${MB_ISO_NAMES[$i]}"
+        local safe_name=$(echo "$iso_name" | tr ' .' '__' | tr -cd 'a-zA-Z0-9_-')
+
+        log "INFO" "Extraindo wimboot files: $iso_name -> $safe_name"
+        if usar_whiptail; then
+            (
+                echo 10; echo "XXX"; echo "Extraindo boot files de $iso_name..."; echo "XXX"
+                extrair_wimboot_files "${MB_ISOS[$i]}" "$safe_name" "$MNT_FAT"
+                echo 100
+            ) | whiptail --title "$TITULO" --gauge "Extraindo $iso_name..." 8 70 0
+        else
+            echo ""
+            barra_progresso 50 "Extraindo boot files: $iso_name..."
+            extrair_wimboot_files "${MB_ISOS[$i]}" "$safe_name" "$MNT_FAT"
+            barra_progresso 100 "$iso_name extraido!"
+            echo ""
+        fi
+    done
+
+    # Baixar wimboot se necessario
+    if [ "$has_extra_win" = true ]; then
+        log "INFO" "Obtendo wimboot binary..."
+        obter_wimboot "$MNT_FAT" || log "WARN" "wimboot nao disponivel, Windows secundarios nao funcionarao"
+    fi
+
+    # --- Copiar Linux ISOs ---
+    for ((i=0; i<${#MB_ISOS[@]}; i++)); do
+        [ "${MB_ISO_TYPES[$i]}" != "linux" ] && continue
+
+        local iso_name="${MB_ISO_NAMES[$i]}"
+        log "INFO" "Copiando ISO Linux: $iso_name"
+        copiar_com_progresso "${MB_ISOS[$i]}" "$MNT_FAT/iso/" \
+            "Copiando $iso_name para /iso/..." \
+            --no-owner --no-group
+    done
+
+    # --- Gerar grub.cfg ---
+    log "INFO" "Gerando grub.cfg..."
+    gerar_grub_cfg "$MNT_FAT"
 
 else
     # ===========================================================
