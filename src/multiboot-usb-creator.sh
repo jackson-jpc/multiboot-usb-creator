@@ -111,13 +111,13 @@ copiar_com_progresso() {
                 local seg=$((decorrido % 60))
                 local tempo_dec=$(printf "%02d:%02d" $min $seg)
                 echo "XXX"
+                echo "$pct"
                 echo "$titulo"
                 echo ""
                 echo "  Transferido: $transferido  |  Velocidade: $velocidade"
                 echo "  Arquivos:    $arq_feito / $arq_total"
                 echo "  Tempo:       $tempo_dec  |  ETA: $eta"
                 echo "XXX"
-                echo "$pct"
             elif [[ "$linha" =~ ([0-9,\.]+[KMGT]?i?B?)\s+([0-9]+)%\s+([0-9,\.]+[KMGT]?i?B/s)\s+([0-9:]+) ]]; then
                 local transferido="${BASH_REMATCH[1]}"
                 local pct="${BASH_REMATCH[2]}"
@@ -129,12 +129,12 @@ copiar_com_progresso() {
                 local seg=$((decorrido % 60))
                 local tempo_dec=$(printf "%02d:%02d" $min $seg)
                 echo "XXX"
+                echo "$pct"
                 echo "$titulo"
                 echo ""
                 echo "  Transferido: $transferido  |  Velocidade: $velocidade"
                 echo "  Tempo:       $tempo_dec  |  ETA: $eta"
                 echo "XXX"
-                echo "$pct"
             fi
         done | whiptail --title "$TITULO" --gauge "$titulo\n\n  Iniciando copia..." 10 70 0
     else
@@ -489,7 +489,7 @@ EARLYEOF
         --locales="" \
         --fonts="" \
         --themes="" \
-        --modules="part_msdos part_gpt fat iso9660 udf loopback chain ntldr normal configfile linux search search_fs_uuid search_fs_file search_label ntfs" \
+        --modules="part_msdos part_gpt fat iso9660 udf loopback chain normal configfile linux search search_fs_uuid search_fs_file search_label ntfs" \
         "boot/grub/grub.cfg=$early_cfg" >> "$LOG_FILE" 2>&1
 
     rm -f "$early_cfg"
@@ -842,19 +842,19 @@ split_wim_com_progresso() {
                 local num_swm=$(ls "$dest_dir"/install*.swm 2>/dev/null | wc -l)
 
                 echo "XXX"
+                echo "$pct"
                 echo "[$etapa_num/$total_etapas] Dividindo $wim_nome..."
                 echo ""
                 echo "  Progresso:   $escrito_h / $total_h"
                 echo "  Partes:      $num_swm arquivo(s) .swm criados"
                 echo "XXX"
-                echo "$pct"
                 sleep 2
             done
             wait "$pid" 2>/dev/null
             echo "XXX"
+            echo 100
             echo "[$etapa_num/$total_etapas] $wim_nome dividido com sucesso!"
             echo "XXX"
-            echo 100
         ) | whiptail --title "$TITULO" --gauge \
             "[$etapa_num/$total_etapas] Dividindo $wim_nome..." 10 70 0
     else
