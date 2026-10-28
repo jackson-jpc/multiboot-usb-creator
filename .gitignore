@@ -1,5 +1,11 @@
-# Reference repos (too large for our repo)
+# Reference repos (local only)
 referencias/
+
+# Claude Code data (local only)
+.claude/
+
+# Temp files
+tmp/
 
 # ISO files
 *.iso
@@ -17,3 +23,6 @@ dist/
 # Temp
 *.tmp
 *.log
+
+# Branding kit original
+Kit de Identidade*.png

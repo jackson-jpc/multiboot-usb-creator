@@ -1,18 +1,13 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/USB-Bootable_Creator-blue?style=for-the-badge&logo=usb&logoColor=white" alt="USB Bootable Creator"/>
-  <br/>
+  <img src="assets/banners/banner-github.png" alt="multiboot-usb-creator" width="800"/>
+</p>
+
+<p align="center">
   <img src="https://img.shields.io/badge/Platform-Linux-FCC624?style=flat-square&logo=linux&logoColor=black" alt="Linux"/>
   <img src="https://img.shields.io/badge/Shell-Bash-4EAA25?style=flat-square&logo=gnubash&logoColor=white" alt="Bash"/>
   <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT License"/>
   <img src="https://img.shields.io/github/stars/jackson-jpc/multiboot-usb-creator?style=flat-square&color=yellow" alt="Stars"/>
   <img src="https://img.shields.io/github/last-commit/jackson-jpc/multiboot-usb-creator?style=flat-square&color=blue" alt="Last Commit"/>
-</p>
-
-<h1 align="center">🔥 multiboot-usb-creator</h1>
-
-<p align="center">
-  <b>Crie pendrives bootáveis multi-sistema com suporte a Legacy BIOS e UEFI.</b><br/>
-  <i>Create multi-system bootable USB drives with Legacy BIOS and UEFI support.</i>
 </p>
 
 <p align="center">
@@ -43,12 +38,17 @@ Ferramenta **open-source** para criar pendrives bootáveis com **Windows** e **L
 | 🔄 **BIOS + UEFI** | Mesmo pendrive funciona em Legacy BIOS e UEFI |
 | 🛡️ **Modo Compatível** | MBR + FAT32 — funciona em qualquer hardware |
 | ⚡ **Modo Moderno** | GPT + FAT32/NTFS — para PCs UEFI recentes |
+| 🚀 **Multi-Boot** | Vários Windows + Linux no mesmo pendrive com GRUB2 |
 | 🔍 **Detecção automática** | Encontra pendrives USB e ISOs automaticamente |
 | 📊 **Progresso detalhado** | Velocidade, ETA, arquivos transferidos, tempo decorrido |
 | ✅ **Validador** | Verifica se o pendrive está correto após criação |
 | 🏷️ **Detecção de versão** | Identifica Windows 7/8/10/11 e edições via wimlib |
 | 📦 **Split automático** | Divide install.wim > 4GB para FAT32 |
+| 🔐 **Verificação SHA256** | Confere integridade da ISO antes de gravar |
+| ⚡ **Detecção USB 2.0/3.0** | Alerta sobre velocidade do pendrive |
 | 🖥️ **Menu interativo** | Interface whiptail com fallback para terminal |
+| 📋 **Parâmetros CLI** | `--mode`, `--iso`, `--dev`, `--verify`, `--help` |
+| 📄 **Log de operações** | Registro completo em arquivo de log |
 
 ---
 
@@ -61,7 +61,17 @@ Ferramenta **open-source** para criar pendrives bootáveis com **Windows** e **L
 │   Partição:  MBR + FAT32 única                             │
 │   Boot:      Legacy BIOS ✅  UEFI ✅  Secure Boot ⚠️      │
 │   Hardware:  Qualquer PC (X99, B75, antigos, modernos)     │
+│   ISOs:      1 Windows por pendrive                        │
 │   Limite:    install.wim > 4GB é dividido automaticamente  │
+│                                                             │
+├─────────────────────────────────────────────────────────────┤
+│                   MODO MULTI-BOOT                           │
+│                                                             │
+│   Partição:  MBR + FAT32 única + GRUB2                    │
+│   Boot:      Legacy BIOS ✅  UEFI ✅  Secure Boot ⚠️      │
+│   Hardware:  Qualquer PC (X99, B75, antigos, modernos)     │
+│   ISOs:      Vários Windows + Linux no mesmo pendrive      │
+│   Menu:      GRUB2 com seleção de sistema                  │
 │                                                             │
 ├─────────────────────────────────────────────────────────────┤
 │                   MODO MODERNO                              │
@@ -69,6 +79,7 @@ Ferramenta **open-source** para criar pendrives bootáveis com **Windows** e **L
 │   Partição:  GPT + FAT32 (EFI) + NTFS (dados)             │
 │   Boot:      Legacy BIOS ❌  UEFI ✅  Secure Boot ✅      │
 │   Hardware:  PCs UEFI recentes                             │
+│   ISOs:      1 Windows por pendrive                        │
 │   Limite:    Sem limite de tamanho de arquivo               │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
@@ -81,12 +92,21 @@ Ferramenta **open-source** para criar pendrives bootáveis com **Windows** e **L
 | OS | Versões | Status | Obs |
 |:---|:--------|:------:|:----|
 | <img src="https://img.shields.io/badge/Windows_10-0078D6?style=flat-square&logo=windows&logoColor=white"/> | 22H2 x64 | ✅ Funcional | Testado em X99 Machinist |
-| <img src="https://img.shields.io/badge/Windows_11-0078D4?style=flat-square&logo=windows11&logoColor=white"/> | 24H2 x64 | 🔧 Em dev | |
-| <img src="https://img.shields.io/badge/Windows_7-0078D6?style=flat-square&logo=windows&logoColor=white"/> | SP1 x64 | 🔧 Em dev | |
-| <img src="https://img.shields.io/badge/Ubuntu-E95420?style=flat-square&logo=ubuntu&logoColor=white"/> | LTS | 📋 Planejado | |
-| <img src="https://img.shields.io/badge/Debian-A81D33?style=flat-square&logo=debian&logoColor=white"/> | Stable | 📋 Planejado | |
+| <img src="https://img.shields.io/badge/Windows_11-0078D4?style=flat-square&logo=windows11&logoColor=white"/> | 24H2 x64 | ✅ Funcional | |
+| <img src="https://img.shields.io/badge/Windows_7-0078D6?style=flat-square&logo=windows&logoColor=white"/> | SP1 x64 | ✅ Funcional | |
+| <img src="https://img.shields.io/badge/Ubuntu-E95420?style=flat-square&logo=ubuntu&logoColor=white"/> | LTS (20.04/22.04/24.04) | ✅ Funcional | Multi-Boot |
+| <img src="https://img.shields.io/badge/Linux_Lite-F7E018?style=flat-square&logo=linux&logoColor=black"/> | 7.0 | ✅ Funcional | Multi-Boot |
+| <img src="https://img.shields.io/badge/Debian-A81D33?style=flat-square&logo=debian&logoColor=white"/> | Stable (12+) | 📋 Planejado | |
 | <img src="https://img.shields.io/badge/Proxmox-E57000?style=flat-square&logo=proxmox&logoColor=white"/> | 8.x | 📋 Planejado | |
 | <img src="https://img.shields.io/badge/Hiren's_Boot-333333?style=flat-square&logo=windows-terminal&logoColor=white"/> | Latest | 📋 Planejado | |
+
+---
+
+### 🖼️ Screenshots
+
+<p align="center">
+  <img src="assets/screenshots/terminal-menu.png" alt="Menu do terminal" width="500"/>
+</p>
 
 ---
 
@@ -152,12 +172,17 @@ O modo **Verificar** analisa qualquer pendrive USB e gera um relatório completo
 | 🔄 **BIOS + UEFI** | Same USB works on Legacy BIOS and UEFI |
 | 🛡️ **Compatible Mode** | MBR + FAT32 — works on any hardware |
 | ⚡ **Modern Mode** | GPT + FAT32/NTFS — for recent UEFI PCs |
+| 🚀 **Multi-Boot** | Multiple Windows + Linux on the same USB with GRUB2 |
 | 🔍 **Auto detection** | Finds USB drives and ISOs automatically |
 | 📊 **Detailed progress** | Speed, ETA, transferred files, elapsed time |
 | ✅ **Validator** | Checks if USB was created correctly |
 | 🏷️ **Version detection** | Identifies Windows 7/8/10/11 and editions via wimlib |
 | 📦 **Auto split** | Splits install.wim > 4GB for FAT32 |
+| 🔐 **SHA256 verification** | Checks ISO integrity before writing |
+| ⚡ **USB 2.0/3.0 detection** | Warns about drive speed |
 | 🖥️ **Interactive menu** | Whiptail UI with terminal fallback |
+| 📋 **CLI parameters** | `--mode`, `--iso`, `--dev`, `--verify`, `--help` |
+| 📄 **Operation log** | Full log saved to file |
 
 ---
 
@@ -166,10 +191,11 @@ O modo **Verificar** analisa qualquer pendrive USB e gera um relatório completo
 | OS | Versions | Status | Notes |
 |:---|:---------|:------:|:------|
 | <img src="https://img.shields.io/badge/Windows_10-0078D6?style=flat-square&logo=windows&logoColor=white"/> | 22H2 x64 | ✅ Working | Tested on X99 Machinist |
-| <img src="https://img.shields.io/badge/Windows_11-0078D4?style=flat-square&logo=windows11&logoColor=white"/> | 24H2 x64 | 🔧 In dev | |
-| <img src="https://img.shields.io/badge/Windows_7-0078D6?style=flat-square&logo=windows&logoColor=white"/> | SP1 x64 | 🔧 In dev | |
-| <img src="https://img.shields.io/badge/Ubuntu-E95420?style=flat-square&logo=ubuntu&logoColor=white"/> | LTS | 📋 Planned | |
-| <img src="https://img.shields.io/badge/Debian-A81D33?style=flat-square&logo=debian&logoColor=white"/> | Stable | 📋 Planned | |
+| <img src="https://img.shields.io/badge/Windows_11-0078D4?style=flat-square&logo=windows11&logoColor=white"/> | 24H2 x64 | ✅ Working | |
+| <img src="https://img.shields.io/badge/Windows_7-0078D6?style=flat-square&logo=windows&logoColor=white"/> | SP1 x64 | ✅ Working | |
+| <img src="https://img.shields.io/badge/Ubuntu-E95420?style=flat-square&logo=ubuntu&logoColor=white"/> | LTS (20.04/22.04/24.04) | ✅ Working | Multi-Boot |
+| <img src="https://img.shields.io/badge/Linux_Lite-F7E018?style=flat-square&logo=linux&logoColor=black"/> | 7.0 | ✅ Working | Multi-Boot |
+| <img src="https://img.shields.io/badge/Debian-A81D33?style=flat-square&logo=debian&logoColor=white"/> | Stable (12+) | 📋 Planned | |
 | <img src="https://img.shields.io/badge/Proxmox-E57000?style=flat-square&logo=proxmox&logoColor=white"/> | 8.x | 📋 Planned | |
 | <img src="https://img.shields.io/badge/Hiren's_Boot-333333?style=flat-square&logo=windows-terminal&logoColor=white"/> | Latest | 📋 Planned | |
 
@@ -183,11 +209,14 @@ O modo **Verificar** analisa qualquer pendrive USB e gera um relatório completo
 # Ubuntu / Debian / Pop!_OS
 sudo apt install parted dosfstools ntfs-3g wimtools rsync
 
+# Multi-Boot (adicional / additional)
+sudo apt install grub-pc-bin grub-efi-amd64-bin grub-common
+
 # Fedora
-sudo dnf install parted dosfstools ntfs-3g wimlib-utils rsync
+sudo dnf install parted dosfstools ntfs-3g wimlib-utils rsync grub2-pc grub2-efi-x64
 
 # Arch Linux
-sudo pacman -S parted dosfstools ntfs-3g wimlib rsync
+sudo pacman -S parted dosfstools ntfs-3g wimlib rsync grub
 ```
 
 ### Download
@@ -200,7 +229,17 @@ cd multiboot-usb-creator
 ### Uso / Usage
 
 ```bash
+# Menu interativo / Interactive menu
 sudo bash src/multiboot-usb-creator.sh
+
+# Modo direto / Direct mode
+sudo bash src/multiboot-usb-creator.sh --mode compat --iso /path/to/windows.iso --dev /dev/sdX
+
+# Verificar pendrive / Verify USB
+sudo bash src/multiboot-usb-creator.sh --verify --dev /dev/sdX
+
+# Ajuda / Help
+bash src/multiboot-usb-creator.sh --help
 ```
 
 ---
@@ -209,8 +248,8 @@ sudo bash src/multiboot-usb-creator.sh
 
 ```mermaid
 graph LR
-    A[Fase 1<br/>Script Bash] --> B[Fase 2<br/>Modular + Testes]
-    B --> C[Fase 3<br/>GUI + AppImage]
+    A[Fase 1<br/>Script Bash] --> B[Fase 2<br/>GUI Python]
+    B --> C[Fase 3<br/>Cross-Platform]
     C --> D[Fase 4<br/>Comunidade]
 
     style A fill:#4CAF50,color:#fff
@@ -221,10 +260,12 @@ graph LR
 
 | Fase | Descrição | Status |
 |:-----|:----------|:------:|
-| **1. Script Bash** | Windows 7/10/11 + Linux + validador | 🟡 Em andamento |
-| **2. Modular** | Funções separadas, configs, CI/CD | ⬜ Planejado |
-| **3. GUI** | Interface gráfica + AppImage + Windows | ⬜ Planejado |
+| **1. Script Bash** | Windows 7/10/11 + Linux + Multi-Boot + validador | 🟡 Em andamento |
+| **2. GUI Python** | Interface gráfica + tkinter + AppImage | ⬜ Planejado |
+| **3. Cross-Platform** | Versão Windows + .exe | ⬜ Planejado |
 | **4. Comunidade** | Releases, wiki, traduções, contribuições | ⬜ Planejado |
+
+Veja o [Roadmap completo](docs/ROADMAP.md) para detalhes.
 
 ---
 

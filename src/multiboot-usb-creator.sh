@@ -1591,14 +1591,14 @@ fi
 
 if [ "$MODO" = "MULTIBOOT" ]; then
     # Confirmacao multi-boot
-    local conf_isos=""
+    conf_isos=""
     for ((i=0; i<${#MB_ISOS[@]}; i++)); do
-        local marker=""
+        marker=""
         [ "${MB_ISOS[$i]}" = "$MB_PRIMARY_WIN" ] && marker=" [PRIMARIO]"
         conf_isos+="  - ${MB_ISO_NAMES[$i]} (${MB_ISO_TYPES[$i]})${marker}\n"
     done
     if usar_whiptail; then
-        local conf_limpo=$(echo -e "$ESPACO_INFO" | sed 's/\x1b\[[0-9;]*m//g')
+        conf_limpo=$(echo -e "$ESPACO_INFO" | sed 's/\x1b\[[0-9;]*m//g')
         whiptail --title "$TITULO" --scrolltext \
             --yesno "CONFIRMAR OPERACAO MULTI-BOOT:\n\n\
 Modo:     $MODO_DESC\n\
@@ -1874,14 +1874,14 @@ elif [ "$MODO" = "MULTIBOOT" ]; then
     fi
 
     # --- Copiar Windows secundarios (wimboot files) ---
-    local has_extra_win=false
+    has_extra_win=false
     for ((i=0; i<${#MB_ISOS[@]}; i++)); do
         [ "${MB_ISO_TYPES[$i]}" != "windows" ] && continue
         [ "${MB_ISOS[$i]}" = "$MB_PRIMARY_WIN" ] && continue
 
         has_extra_win=true
-        local iso_name="${MB_ISO_NAMES[$i]}"
-        local safe_name=$(echo "$iso_name" | tr ' .' '__' | tr -cd 'a-zA-Z0-9_-')
+        iso_name="${MB_ISO_NAMES[$i]}"
+        safe_name=$(echo "$iso_name" | tr ' .' '__' | tr -cd 'a-zA-Z0-9_-')
 
         log "INFO" "Extraindo wimboot files: $iso_name -> $safe_name"
         if usar_whiptail; then
@@ -1909,7 +1909,7 @@ elif [ "$MODO" = "MULTIBOOT" ]; then
     for ((i=0; i<${#MB_ISOS[@]}; i++)); do
         [ "${MB_ISO_TYPES[$i]}" != "linux" ] && continue
 
-        local iso_name="${MB_ISO_NAMES[$i]}"
+        iso_name="${MB_ISO_NAMES[$i]}"
         log "INFO" "Copiando ISO Linux: $iso_name"
         copiar_com_progresso "${MB_ISOS[$i]}" "$MNT_FAT/iso/" \
             "Copiando $iso_name para /iso/..." \
